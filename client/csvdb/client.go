@@ -7,6 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go/service/s3/s3iface"
 	"github.com/pkg/errors"
 )
 
@@ -16,13 +17,17 @@ type Filter struct {
 	k, v string
 }
 
-// NewFilter creates a new filter for a key value pair
+// NewFilter creates a new filter foa key value pair
 func NewFilter(k, v string) Filter {
 	return Filter{k, v}
 }
 
 // Row is one record in the csv
-type Row struct{}
+type Row struct {
+	ID        string `json:"policyID"`
+	StateCode string `json:"statecode"`
+	County    string `json:"county"`
+}
 
 // Client represents the struct used to make queries to an s3 csv
 type Client struct {
@@ -58,7 +63,7 @@ func (c *Client) QueryContext(ctx context.Context, filters ...Filter) ([]*Row, e
 	}
 
 	req := &s3.SelectObjectContentInput{
-		Bucket:         aws.String(bucket),
+		Bucket:         aws.String(c.bucket),
 		Key:            aws.String(c.key),
 		Expression:     aws.String(q),
 		ExpressionType: aws.String("SQL"),
