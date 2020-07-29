@@ -1,6 +1,7 @@
 package csvdb
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -46,8 +47,68 @@ func NewClient(s s3iface.S3API, bucket, key string) *Client {
 	}
 }
 
+// QueryRawContext uses a raw string query to call s3select on a resource
+func (c *Client) QueryRawContext(ctx context.Context, query string, useHeader bool) ([]map[string]string, error) {
+	csvInput := &s3.CSVInput{}
+	if useHeader {
+		// query using header names. This is a choice for this example
+		// many csv files do not have a header row; In that case,
+		// this property would not be needed and the "filters" would be
+		// on the column index (e.g. _1, _2, _3...)
+		csvInput.SetFileHeaderInfo("Use")
+	}
+	req := &s3.SelectObjectContentInput{
+		Bucket:         aws.String(c.bucket),
+		Key:            aws.String(c.key),
+		Expression:     aws.String(query),
+		ExpressionType: aws.String("SQL"),
+		InputSerialization: &s3.InputSerialization{
+			CSV: csvInput,
+		},
+	}
+
+	// we want the output as json, to have the field names in it too
+	req = req.SetOutputSerialization(&s3.OutputSerialization{
+		JSON: &s3.JSONOutput{},
+	})
+	out, err := c.SelectObjectContentWithContext(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	stream := out.GetEventStream()
+	defer stream.Close()
+
+	rows := []map[string]string{}
+	buf := []byte{}
+	for v := range stream.Events() {
+		if err := stream.Err(); err != nil {
+			return nil, err
+		}
+
+		switch v.(type) {
+		case *s3.RecordsEvent:
+			rec, _ := v.(*s3.RecordsEvent)
+			buf = append(buf, rec.Payload...)
+		default:
+		}
+	}
+	rawRows := bytes.Split(buf, []byte("\n"))
+	for _, v := range rawRows {
+		if len(v) <= 0 {
+			continue
+		}
+		var row map[string]string
+		if err := json.Unmarshal(v, &row); err != nil {
+			return nil, errors.Wrapf(err, "unable to parse json: %s", string(v))
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
 // QueryContext is used to make a select query agains the CSV in S3
-func (c *Client) QueryContext(ctx context.Context, filters ...Filter) ([]*Row, error) {
+func (c *Client) QueryContext(ctx context.Context, filters ...Filter) ([]map[string]string, error) {
 
 	if len(filters) <= 0 {
 		return nil, fmt.Errorf("nothing to query by")
@@ -90,7 +151,7 @@ func (c *Client) QueryContext(ctx context.Context, filters ...Filter) ([]*Row, e
 	stream := out.GetEventStream()
 	defer stream.Close()
 
-	rows := []*Row{}
+	rows := []map[string]string{}
 	for v := range stream.Events() {
 		if err := stream.Err(); err != nil {
 			return nil, err
@@ -99,11 +160,11 @@ func (c *Client) QueryContext(ctx context.Context, filters ...Filter) ([]*Row, e
 		switch v.(type) {
 		case *s3.RecordsEvent:
 			rec, _ := v.(*s3.RecordsEvent)
-			var row Row
+			var row map[string]string
 			if err := json.Unmarshal(rec.Payload, &row); err != nil {
 				return nil, errors.Wrapf(err, "unable to parse json: %s", string(rec.Payload))
 			}
-			rows = append(rows, &row)
+			rows = append(rows, row)
 		default:
 		}
 	}
